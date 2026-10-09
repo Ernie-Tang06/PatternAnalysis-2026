@@ -9,4 +9,4 @@ Tasks may include:
 * Disease classification
 * Generative modelling with StyleGAN and Stable Diffusion
 
-add new things for test.
+add new things for test.2
