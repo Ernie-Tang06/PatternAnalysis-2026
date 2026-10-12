@@ -96,11 +96,11 @@ class LayerNorm(nn.Module):
             x = self.weight[:, None, None] * x + self.bias[:, None, None]
             return x
 
-def convnext_tiny(**kwargs):
+def convnext(**kwargs):
     model = ConvNeXt(depths=[3, 3, 9, 3], dims=[96, 192, 384, 768], **kwargs)
     return model
 
 if __name__ == "__main__":
-    model = convnext_tiny()
+    model = convnext()
     x = torch.randn(4, 1, 224, 224)   # batch of 4 grayscale images
-    print(model(x).shape)  
+    print(model(x).shape) 

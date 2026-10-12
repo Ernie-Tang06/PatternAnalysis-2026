@@ -2,7 +2,7 @@ import os
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
-from modules import convnext_tiny
+from modules import convnext
 from dataset import get_dataloaders
 
 EPOCHS = 1
@@ -33,7 +33,7 @@ def run_epoch(model, loader, loss_fn, opt=None):
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     train_loader, val_loader, test_loader = get_dataloaders()
-    model = convnext_tiny().cuda()
+    model = convnext().cuda()
     loss_fn = nn.CrossEntropyLoss()
     opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.05)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, EPOCHS)
