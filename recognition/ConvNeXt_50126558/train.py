@@ -4,6 +4,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 from modules import convnext
 from dataset import get_dataloaders
+from sklearn.metrics import classification_report, confusion_matrix
 
 EPOCHS = 1
 scaler = torch.amp.GradScaler("cuda")
@@ -63,8 +64,7 @@ if __name__ == "__main__":
 
     model.load_state_dict(torch.load("convnext_best.pth"))
     test_loss, test_acc, p, l = run_epoch(model, test_loader, loss_fn)
-    tp, tn = ((p == 1) & (l == 1)).sum().item(), ((p == 0) & (l == 0)).sum().item()
-    fp, fn = ((p == 1) & (l == 0)).sum().item(), ((p == 0) & (l == 1)).sum().item()
-    print(f"test loss {test_loss:.4f} acc {test_acc:.4f}")
-    print(f"precision {tp / max(tp + fp, 1):.4f} recall {tp / max(tp + fn, 1):.4f} tp {tp} tn {tn} fp {fp} fn {fn}")
+    print(f"test loss {test_loss:.4f}")
+    print(classification_report(l.cpu(), p.cpu(), target_names=["NC", "AD"], digits=4))
+    print(confusion_matrix(l.cpu(), p.cpu()))
     print(f"peak VRAM {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
