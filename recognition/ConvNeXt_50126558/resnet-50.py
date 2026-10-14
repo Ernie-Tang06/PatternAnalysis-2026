@@ -1,29 +1,17 @@
+import os
+import time
 import warnings
 import torch
 import torch.nn as nn
-import torchvision
 from dataset import get_dataloaders
-import torchvision.transforms as transforms
-from sklearn.metrics import classification_report
-
+from sklearn.metrics import classification_report, confusion_matrix
 
 warnings.filterwarnings("ignore", message="Detected call of")
 
-ROOT = r"C:\Soong Earn (everything)\Australia\Y2S3\COMP 3710 Pattern Recognition and Analysis\Final Report\ADNI\AD_NC"
-
-transform_train = transforms.Compose([
-    transforms.Grayscale(1),
-    transforms.Resize((224, 224)),
-    transforms.RandomCrop(224, padding=8),
-    transforms.ToTensor(),
-    transforms.Normalize((0.5,), (0.5,)),
-    transforms.RandomErasing(p=0.25)])
-
-transform_test = transforms.Compose([
-    transforms.Grayscale(1),
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize((0.5,), (0.5,))])
+EPOCHS = 20
+MAX_LR = 0.1
+SEED = 0
+scaler = torch.amp.GradScaler("cuda")
 
 
 class Bottleneck(nn.Module):
@@ -39,7 +27,6 @@ class Bottleneck(nn.Module):
         self.conv3 = nn.Conv2d(mid_channels, out_channels, 1, bias=False)
         self.bn3 = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU(inplace=True)
-
         if stride != 1 or in_channels != out_channels:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, 1, stride, bias=False),
@@ -71,125 +58,71 @@ class ResNet50(nn.Module):
         self.fc = nn.Linear(512 * Bottleneck.expansion, num_classes)
 
     def make_layer(self, mid_channels, blocks, stride):
-        strides = [stride] + [1] * (blocks - 1)
         layers = []
-        for s in strides:
+        for s in [stride] + [1] * (blocks - 1):
             layers.append(Bottleneck(self.in_channels, mid_channels, s))
             self.in_channels = mid_channels * Bottleneck.expansion
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        x = self.relu(self.bn1(self.conv1(x)))
-        x = self.maxpool(x)
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-        x = torch.flatten(self.avgpool(x), 1)
-        return self.fc(x)
+        x = self.maxpool(self.relu(self.bn1(self.conv1(x))))
+        x = self.layer4(self.layer3(self.layer2(self.layer1(x))))
+        return self.fc(torch.flatten(self.avgpool(x), 1))
 
 
-def evaluate(model, loader, device):
-    model.eval()
-    correct, total = 0, 0
-    with torch.no_grad():
-        for images, labels in loader:
-            images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
-            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=torch.cuda.is_available()):
-                outputs = model(images)
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-    model.train()
-    return 100 * correct / total
-
-
-def report(model, loader, device):
-    model.eval()
-    preds, targets = [], []
-    with torch.no_grad():
-        for images, labels in loader:
-            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=torch.cuda.is_available()):
-                outputs = model(images.to(device))
-            preds += outputs.argmax(1).cpu().tolist()
-            targets += labels.tolist()
-    model.train()
-    print(classification_report(targets, preds, target_names=["NC", "AD"], digits=3))
-
-
-def main():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print("Device:", device, "|", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU only")
-
-    num_epochs = 20
-    max_lr = 0.1
-    batch_size = 32
-    print(f"Epochs: {num_epochs} | Max LR: {max_lr} | Batch size: {batch_size}")
-
-    train_loader, test_loader = get_dataloaders(batch_size)
-
-    model = ResNet50(num_classes=2).to(device)
-
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-    optimizer = torch.optim.SGD(model.parameters(), lr=max_lr, momentum=0.9, weight_decay=5e-4, nesterov=True)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=max_lr, epochs=num_epochs, steps_per_epoch=len(train_loader), pct_start=0.25)
-    scaler = torch.amp.GradScaler("cuda") if torch.cuda.is_available() else None
-
-    print("\n> Training")
-    model.train()
-
-    best_acc = 0.0
-    best_acc_epoch = 0
-
-    for epoch in range(num_epochs):
-        correct, total, running_loss = 0, 0, 0.0
-
-        for images, labels in train_loader:
-            images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
-            optimizer.zero_grad(set_to_none=True)
-
-            if torch.cuda.is_available():
-                with torch.autocast(device_type="cuda", dtype=torch.float16):
-                    outputs = model(images)
-                    loss = criterion(outputs, labels)
+def run_epoch(model, loader, loss_fn, opt=None, sched=None):
+    model.train(opt is not None)
+    total, preds, labels = 0, [], []
+    with torch.set_grad_enabled(opt is not None):
+        for x, y in loader:
+            x, y = x.cuda(non_blocking=True), y.cuda(non_blocking=True)
+            with torch.autocast("cuda"):
+                out = model(x)
+                loss = loss_fn(out, y)
+            if opt:
+                opt.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()
-                scaler.step(optimizer)
+                scaler.step(opt)
                 scaler.update()
-            else:
-                outputs = model(images)
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
-
-            scheduler.step()
-
-            running_loss += loss.item()
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-
-        test_acc = evaluate(model, test_loader, device)
-
-        if test_acc > best_acc:
-            best_acc, best_acc_epoch = test_acc, epoch + 1
-            torch.save(model.state_dict(), "best_model.pt")
-
-        print(f"Epoch [{epoch+1}/{num_epochs}] Loss: {running_loss/len(train_loader):.5f} "
-              f"Train Acc: {100*correct/total:.2f}% Test Acc: {test_acc:.2f}%")
-
-    print("\nTUNING SUMMARY")
-    print(f"Best test accuracy: {best_acc:.2f}% at epoch {best_acc_epoch}")
-
-    model.load_state_dict(torch.load("best_model.pt"))
-    final_acc = evaluate(model, test_loader, device)
-    report(model, test_loader, device)
-
-    print("\nFINAL RESULTS")
-    print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
-    print(f"Epochs: {num_epochs} | Batch size: {batch_size}")
-    print(f"Test accuracy (best checkpoint): {final_acc:.2f}%")
+                sched.step()
+            total += loss.item() * len(y)
+            preds.append(out.argmax(1))
+            labels.append(y)
+    preds, labels = torch.cat(preds), torch.cat(labels)
+    return total / len(labels), (preds == labels).float().mean().item(), preds, labels
 
 
 if __name__ == "__main__":
-    main()
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    torch.manual_seed(SEED)
+    torch.cuda.manual_seed_all(SEED)
+    torch.backends.cudnn.benchmark = True
+
+    train_loader, val_loader, test_loader = get_dataloaders()
+    model = ResNet50().cuda()
+    print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | lr {MAX_LR} | seed {SEED}")
+    torch.cuda.reset_peak_memory_stats()
+
+    loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
+    opt = torch.optim.SGD(model.parameters(), lr=MAX_LR, momentum=0.9, weight_decay=5e-4, nesterov=True)
+    sched = torch.optim.lr_scheduler.OneCycleLR(
+        opt, max_lr=MAX_LR, epochs=EPOCHS, steps_per_epoch=len(train_loader), pct_start=0.25)
+
+    best = 0
+    for e in range(EPOCHS):
+        t = time.time()
+        tl, ta, _, _ = run_epoch(model, train_loader, loss_fn, opt, sched)
+        vl, va, _, _ = run_epoch(model, val_loader, loss_fn)
+        if va > best:
+            best = va
+            torch.save(model.state_dict(), "resnet_best.pth")
+        print(f"epoch {e + 1}/{EPOCHS}  train loss {tl:.4f} acc {ta:.4f}  "
+              f"val loss {vl:.4f} acc {va:.4f}  time {time.time() - t:.1f}s")
+
+    model.load_state_dict(torch.load("resnet_best.pth"))
+    test_loss, test_acc, p, l = run_epoch(model, test_loader, loss_fn)
+    print(f"best val acc {best:.4f}")
+    print(f"test loss {test_loss:.4f}  test acc {test_acc:.4f}")
+    print(classification_report(l.cpu(), p.cpu(), target_names=["NC", "AD"], digits=4))
+    print(confusion_matrix(l.cpu(), p.cpu()))
+    print(f"peak VRAM {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")

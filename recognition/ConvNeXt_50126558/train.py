@@ -1,4 +1,5 @@
 import os
+import time
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
@@ -7,6 +8,8 @@ from dataset import get_dataloaders
 from sklearn.metrics import classification_report, confusion_matrix
 
 EPOCHS = 20
+LR = 1e-4
+SEED = 0
 scaler = torch.amp.GradScaler("cuda")
 
 
@@ -33,31 +36,43 @@ def run_epoch(model, loader, loss_fn, opt=None):
 
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    train_loader, test_loader = get_dataloaders()
+    torch.manual_seed(SEED)
+    torch.cuda.manual_seed_all(SEED)
+    torch.backends.cudnn.benchmark = True
+
+    train_loader, val_loader, test_loader = get_dataloaders()
     model = convnext().cuda()
+    print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | lr {LR} | seed {SEED}")
+    torch.cuda.reset_peak_memory_stats()
+
     loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.05)
+    decay = [p for p in model.parameters() if p.ndim > 1]
+    no_decay = [p for p in model.parameters() if p.ndim <= 1]
+    opt = torch.optim.AdamW([{"params": decay, "weight_decay": 0.05},
+                             {"params": no_decay, "weight_decay": 0.0}], lr=LR)
     warm = torch.optim.lr_scheduler.LinearLR(opt, 0.1, 1.0, total_iters=3)
     cos = torch.optim.lr_scheduler.CosineAnnealingLR(opt, EPOCHS - 3)
     sched = torch.optim.lr_scheduler.SequentialLR(opt, [warm, cos], [3])
 
-    hist = {"train_loss": [], "test_loss": [], "train_acc": [], "test_acc": []}
+    hist = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": []}
     best = 0
     for e in range(EPOCHS):
+        t = time.time()
         tl, ta, _, _ = run_epoch(model, train_loader, loss_fn, opt)
-        vl, va, _, _ = run_epoch(model, test_loader, loss_fn)
+        vl, va, _, _ = run_epoch(model, val_loader, loss_fn)
         sched.step()
         for k, v in zip(hist, (tl, vl, ta, va)):
             hist[k].append(v)
         if va > best:
             best = va
             torch.save(model.state_dict(), "convnext_best.pth")
-        print(f"epoch {e + 1}/{EPOCHS}  train loss {tl:.4f} acc {ta:.4f}  test loss {vl:.4f} acc {va:.4f}")
+        print(f"epoch {e + 1}/{EPOCHS}  train loss {tl:.4f} acc {ta:.4f}  "
+              f"val loss {vl:.4f} acc {va:.4f}  time {time.time() - t:.1f}s")
 
     fig, ax = plt.subplots(1, 2, figsize=(10, 4))
     for a, name in zip(ax, ("loss", "acc")):
         a.plot(hist[f"train_{name}"], label="train")
-        a.plot(hist[f"test_{name}"], label="test")
+        a.plot(hist[f"val_{name}"], label="val")
         a.set_xlabel("epoch")
         a.set_title(name)
         a.legend()
@@ -66,7 +81,8 @@ if __name__ == "__main__":
 
     model.load_state_dict(torch.load("convnext_best.pth"))
     test_loss, test_acc, p, l = run_epoch(model, test_loader, loss_fn)
-    print(f"test loss {test_loss:.4f}")
+    print(f"best val acc {best:.4f}")
+    print(f"test loss {test_loss:.4f}  test acc {test_acc:.4f}")
     print(classification_report(l.cpu(), p.cpu(), target_names=["NC", "AD"], digits=4))
     print(confusion_matrix(l.cpu(), p.cpu()))
     print(f"peak VRAM {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
