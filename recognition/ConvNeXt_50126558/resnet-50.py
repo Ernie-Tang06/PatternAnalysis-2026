@@ -8,9 +8,10 @@ from sklearn.metrics import classification_report, confusion_matrix
 
 warnings.filterwarnings("ignore", message="Detected call of")
 
-EPOCHS = 20
+EPOCHS = 30
 MAX_LR = 0.1
 SEED = 0
+CKPT = "resnet_run3.pth"
 scaler = torch.amp.GradScaler("cuda")
 
 
@@ -115,14 +116,15 @@ if __name__ == "__main__":
         vl, va, _, _ = run_epoch(model, val_loader, loss_fn)
         if va > best:
             best = va
-            torch.save(model.state_dict(), "resnet_best.pth")
+            torch.save(model.state_dict(), "CKPT")
         print(f"epoch {e + 1}/{EPOCHS}  train loss {tl:.4f} acc {ta:.4f}  "
               f"val loss {vl:.4f} acc {va:.4f}  time {time.time() - t:.1f}s")
 
-    model.load_state_dict(torch.load("resnet_best.pth"))
+    model.load_state_dict(torch.load((CKPT)))
     test_loss, test_acc, p, l = run_epoch(model, test_loader, loss_fn)
     print(f"best val acc {best:.4f}")
     print(f"test loss {test_loss:.4f}  test acc {test_acc:.4f}")
     print(classification_report(l.cpu(), p.cpu(), target_names=["NC", "AD"], digits=4))
     print(confusion_matrix(l.cpu(), p.cpu()))
     print(f"peak VRAM {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
+    print(f"saved best checkpoint: {CKPT}, exists: {os.path.exists(CKPT)}")

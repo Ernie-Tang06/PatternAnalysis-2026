@@ -7,9 +7,10 @@ from modules import convnext
 from dataset import get_dataloaders
 from sklearn.metrics import classification_report, confusion_matrix
 
-EPOCHS = 20
+EPOCHS = 30
 LR = 1e-4
 SEED = 0
+CKPT = "convnext_run3.pth"
 scaler = torch.amp.GradScaler("cuda")
 
 
@@ -65,7 +66,7 @@ if __name__ == "__main__":
             hist[k].append(v)
         if va > best:
             best = va
-            torch.save(model.state_dict(), "convnext_best.pth")
+            torch.save(model.state_dict(), "convnext_run3.pth")
         print(f"epoch {e + 1}/{EPOCHS}  train loss {tl:.4f} acc {ta:.4f}  "
               f"val loss {vl:.4f} acc {va:.4f}  time {time.time() - t:.1f}s")
 
@@ -77,9 +78,9 @@ if __name__ == "__main__":
         a.set_title(name)
         a.legend()
     plt.tight_layout()
-    plt.savefig("training_curves.png")
+    plt.savefig("convnext_run3_curves.png")
 
-    model.load_state_dict(torch.load("convnext_best.pth"))
+    model.load_state_dict(torch.load(CKPT))
     test_loss, test_acc, p, l = run_epoch(model, test_loader, loss_fn)
     print(f"best val acc {best:.4f}")
     print(f"test loss {test_loss:.4f}  test acc {test_acc:.4f}")
