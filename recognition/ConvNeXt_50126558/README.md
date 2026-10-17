@@ -1,8 +1,9 @@
-Comparison between 2 models (ConvNeXt and Basic MLP)
+**Comparison between 2 models (ConvNeXt and Basic MLP)**
 
-Chosen Baseline Model - Basic MLP
-All the other variables are controlled to have a fair comparison. 
-Controlled variables
+**Chosen Baseline Model - Basic MLP**
+All other variables are kept constant to ensure a fair comparison, with model architecture being the only variable that changes.
+
+*Controlled variables*
 1) Seed = 0
 2) Epoch = 30
 3) Batch size = 32
@@ -15,7 +16,7 @@ Controlled variables
 10) Evaluation matrix (loss, accuracy, AUROC, classfication report, confusion matrix, peak VRAM)
 11) Model selection = the checkpoint with the highest validation accuracy was selected, and that checkpoint was evaluated on the test set.
 
-Trial and Errors
+*Trial and Errors*
 Comparing between 2 models
 1) Chose Resnet-50 as baseline as it can be modified from demo 2 Resnet-18 because it has the same structure
 2) Result: Resnet has a higher test accuracy compare to ConvNeXt
@@ -24,7 +25,7 @@ Comparing between 2 models
 5) A basic MLP is then chosen as the comparison
 6) The parameters are set to same for comparison as shown above. 
 
-Results
+*Results*
                                 ConvNeXt            Basic MLP
 Best Validation Accuracy        0.8609              0.6898
 test accuracy                   0.7366              0.6207
@@ -37,7 +38,47 @@ ConvNeXt also required more peak GPU memory, using 2.68 GB compared with 0.58 GB
 
 Overall, ConvNeXt achieved stronger classification performance than the Basic MLP on the reported accuracy and AUROC metrics, at the cost of higher GPU memory usage. These results suggest that the ConvNeXt is better suited to this image-classification task under the experimental conditions used.
 
-Terminologies
+
+
+**Feasibility Review**
+*1. User Need, Scope & Acceptance Criteria*
+Intended User: healthcare professionals like doctors, nurses, other medical staff and patients and their families.
+Prototype Purpose: detect this disease at an early stage as it is irreversible. Once it is detected, it can be treated earlier.
+Acceptance Criteria:
+1)	Minimum 0.8 test accuracy on AD vs CN
+2)	It is better to have more false positives compare to false negatives 
+If there is a false positive, further testing can prove that the person is healthy. However, if there is a false negative, the person may be declared healthy and miss the best treatment time. 
+3)	It must be leakage-free evaluation
+Peak VRAM Constraint: personal GPU (NVIDIA GeForce RTX 4050 Laptop) = 6GB
+
+
+*2. Model Choice & Course Concepts:*
+Model Choice: ConvNeXt
+Dataset Configuration: ADNI dataset (split into test and train dataset accordingly and each with AD and NC data inside)
+Model Architecture: 
+<img width="642" height="179" alt="image" src="https://github.com/user-attachments/assets/7b8cbbaf-5b97-4940-ad1b-bb12cd082377" />
+Unlike most modern models which uses transformers, ConvNeXt uses pure convolution. However, it is modernized by changing several things such as big kernel size, layer normalization, GELU and others. 
+Difficulty Band: Hard 
+How course concepts and literature support the choices:
+CNN was introduced at very early stages in this course.
+ConvNeXt was shown to outperform certain transformers such as Swin Transformers by modernizing normal convolutions. (A ConvNet for the 2020s, Liu et al., 2022)
+
+*3. Preliminary Feasibility Evidence:*
+20 epochs: 1 hour
+Test accuracy: 0.71 (way lower than required 0.8)
+<img width="940" height="922" alt="image" src="https://github.com/user-attachments/assets/29ae5d95-8909-4de8-9c27-4ca805873ca8" />
+Resource estimate: 2 hours per train (increase in epoch and other changes)
+
+*4. Risks, Budget & Fallback:*
+Key technical risks: data leakage between train and test, overfitting, training instability
+Computing budget: peak VRAM 6GB
+Next planned experiment: increasing number of epochs is not very reasonable, so other factors need tuning such as hyperparameters, data preprocessing, data augmentations
+
+
+
+
+
+*Terminologies*
 1) Train set - the data used to train the model by calculating gradients and updating its weights.
 2) Validation set - the data used to evaluate the model to improve during the training
 3) Test set - the data used to test how well the model perform after training
