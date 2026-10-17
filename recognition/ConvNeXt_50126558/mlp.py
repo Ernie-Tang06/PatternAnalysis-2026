@@ -1,82 +1,123 @@
-import torch, torch.nn as nn
+import os
+import sys
+import json
+import torch
+import torch.nn as nn
 import matplotlib.pyplot as plt
-from torch.utils.data import DataLoader, Subset
-from torchvision import datasets, transforms
-from sklearn.model_selection import GroupShuffleSplit
-from sklearn.metrics import roc_auc_score, average_precision_score, classification_report, confusion_matrix, balanced_accuracy_score, matthews_corrcoef, roc_curve
+from ConvNeXt_for_comparison import get_dataloaders
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, recall_score, f1_score
 
-root = r"C:\Soong Earn (everything)\Australia\Y2S3\COMP 3710 Pattern Recognition and Analysis\Final Report\ADNI\AD_NC"
-tf = transforms.Compose([transforms.Grayscale(1), transforms.Resize((224, 224)), transforms.ToTensor(), transforms.Normalize(0.5, 0.5)])
-full = datasets.ImageFolder(root + r"\train", tf)
-test_ds = datasets.ImageFolder(root + r"\test", tf)
-groups = [s[0].replace("\\", "/").split("/")[-1].split("_")[0] for s in full.samples]
-tr_idx, va_idx = next(GroupShuffleSplit(1, test_size=0.2, random_state=0).split(range(len(full)), groups=groups))
-train_dl = DataLoader(Subset(full, tr_idx), 32, shuffle=True)
-val_dl = DataLoader(Subset(full, va_idx), 32)
-test_dl = DataLoader(test_ds, 32)
+
+EPOCHS = 30
+LR = 1e-4
+SEED = 0
+CKPT = "mlp_run1.pth" # save best weights so the model can be reloaded without retraining
+scaler = torch.amp.GradScaler("cuda") # supports mixed precision training
+
 
 class MLP(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(224 * 224, 553), nn.ReLU(), nn.Dropout(0.3),
+            nn.Linear(224 * 224, 553), nn.ReLU(), nn.Dropout(0.3), # 553 to match the parameters for ConvNeXt comparison
             nn.Linear(553, 128), nn.ReLU(), nn.Dropout(0.3),
-            nn.Linear(128, 2),
-        )
+            nn.Linear(128, 2),)
 
     def forward(self, x):
         return self.net(x)
 
-dev = "cuda"
-model = MLP().to(dev)
-print("params:", sum(p.numel() for p in model.parameters()), "train/val/test:", len(tr_idx), len(va_idx), len(test_ds))
-opt = torch.optim.Adam(model.parameters(), 1e-4)
-loss_fn = nn.CrossEntropyLoss()
 
-def evaluate(dl):
-    model.eval()
-    loss, ys, ps = 0, [], []
-    with torch.no_grad():
-        for x, y in dl:
-            out = model(x.to(dev))
-            loss += loss_fn(out, y.to(dev)).item() * len(y)
-            ps.append(out.softmax(1)[:, 1].cpu())
-            ys.append(y)
-    y, p = torch.cat(ys), torch.cat(ps)
-    return loss / len(y), ((p > 0.5) == y).float().mean().item(), y, p
+class Tee: # log all printed output to file and console
+    def __init__(self, path):
+        self.terminal, self.file = sys.stdout, open(path, "w", encoding="utf-8")
 
-tr_loss, va_loss, va_acc, best = [], [], [], 0
-for ep in range(30):
-    model.train()
-    total = 0
-    for x, y in train_dl:
-        x, y = x.to(dev), y.to(dev)
-        opt.zero_grad()
-        loss = loss_fn(model(x), y)
-        loss.backward()
-        opt.step()
-        total += loss.item() * len(y)
-    vl, va, _, _ = evaluate(val_dl)
-    tr_loss.append(total / len(tr_idx)); va_loss.append(vl); va_acc.append(va)
-    if va > best:
-        best = va
-        torch.save(model.state_dict(), "mlp.pth")
-    print(f"epoch {ep + 1}: train {tr_loss[-1]:.4f} val {vl:.4f} val acc {va:.4f}")
+    def write(self, msg):
+        self.terminal.write(msg)
+        self.file.write(msg)
+        self.file.flush()
 
-model.load_state_dict(torch.load("mlp.pth"))
-_, acc, y, p = evaluate(test_dl)
-y, p = y.numpy(), p.numpy()
-pred = (p > 0.5).astype(int)
-print(classification_report(y, pred, target_names=["AD", "NC"], digits=4))
-print("confusion matrix (rows true AD, NC; cols pred AD, NC):\n", confusion_matrix(y, pred))
-print(f"test acc {acc:.4f} balanced acc {balanced_accuracy_score(y, pred):.4f} MCC {matthews_corrcoef(y, pred):.4f}")
-print(f"AUROC {roc_auc_score(y, p):.4f} AUPRC (AD) {average_precision_score(y == 0, 1 - p):.4f}")
-print(f"best val {best:.4f} peak VRAM {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
+    def flush(self):
+        self.terminal.flush()
+        self.file.flush()
 
-fig, ax = plt.subplots(1, 3, figsize=(15, 4))
-ax[0].plot(tr_loss, label="train"); ax[0].plot(va_loss, label="val"); ax[0].set_title("loss"); ax[0].legend()
-ax[1].plot(va_acc); ax[1].set_title("val acc")
-fpr, tpr, _ = roc_curve(y, p)
-ax[2].plot(fpr, tpr); ax[2].plot([0, 1], [0, 1], "--"); ax[2].set_title("ROC")
-plt.savefig("mlp_curves.png")
+
+def run_epoch(model, loader, loss_fn, opt=None): 
+    model.train(opt is not None)
+    total, preds, labels, probs = 0, [], [], []
+    with torch.set_grad_enabled(opt is not None):
+        for x, y in loader:
+            x, y = x.cuda(non_blocking=True), y.cuda(non_blocking=True) # start CPU to GPU copy and carry on without waiting
+            with torch.autocast("cuda"):
+                out = model(x)
+                loss = loss_fn(out, y)
+            if opt: # control if optimizer is needed (needed in training, not needed in validation)
+                opt.zero_grad()
+                scaler.scale(loss).backward()
+                scaler.step(opt)
+                scaler.update()
+            total += loss.item() * len(y)
+            preds.append(out.argmax(1)) # returns the index of the largest value
+            labels.append(y)
+            probs.append(out.float().softmax(1)[:, 1])
+    preds, labels, probs = torch.cat(preds), torch.cat(labels), torch.cat(probs)
+    return total / len(labels), (preds == labels).float().mean().item(), preds, labels, probs
+
+
+if __name__ == "__main__": # setup: run from script folder, log output, fix seeds
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    sys.stdout = Tee(CKPT.replace(".pth", ".log"))
+    sys.stderr = sys.stdout # sends errors and warnings into the log
+    torch.manual_seed(SEED)
+    torch.backends.cudnn.benchmark = True # remain for fair comparison
+
+    train_loader, val_loader, test_loader = get_dataloaders() # same data preprocessing from ConvNeXt for comparison
+    model = MLP().cuda() # transfer the weights to the GPU
+    n_params = sum(p.numel() for p in model.parameters()) / 1e6
+    print(f"{n_params:.2f}M params | train/val/test: {len(train_loader.dataset)} {len(val_loader.dataset)} {len(test_loader.dataset)} | lr {LR} | seed {SEED}") # sum and print the parameters, print leraning rate and seed in the output
+    torch.cuda.reset_peak_memory_stats() # resets the peak memory status
+
+    loss_fn = nn.CrossEntropyLoss() # measures how wrong the model's prediction is
+    opt = torch.optim.Adam(model.parameters(), LR) # Adam optimizer to update the model's weight
+
+    hist = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": []} # append after each epoch
+    best = 0
+    for e in range(EPOCHS):
+        tl, ta, _, _, _ = run_epoch(model, train_loader, loss_fn, opt) # training with optimizer
+        vl, va, _, _, _ = run_epoch(model, val_loader, loss_fn) # validation without optimizer
+        for k, v in zip(hist, (tl, vl, ta, va)): # replace 4 append lines
+            hist[k].append(v)
+        if va > best: # save the best validation accuracy and overwrite the CKPT file
+            best = va
+            torch.save(model.state_dict(), CKPT)
+        print(f"epoch {e + 1}/{EPOCHS}  train loss {tl:.4f} acc {ta:.4f}  val loss {vl:.4f} acc {va:.4f}")
+
+    fig, ax = plt.subplots(1, 2, figsize=(10, 4)) # plot the training and loss curve
+    for a, name in zip(ax, ("loss", "acc")):
+        a.plot(hist[f"train_{name}"], label="train")
+        a.plot(hist[f"val_{name}"], label="val")
+        a.set_xlabel("epoch")
+        a.set_title(name)
+        a.legend()
+    plt.tight_layout()
+    plt.savefig(CKPT.replace(".pth", "_curves.png"))
+
+    print(f"\nsaved best checkpoint: {CKPT}, exists: {os.path.exists(CKPT)}")
+    model.load_state_dict(torch.load(CKPT))
+    test_loss, test_acc, p, l, pr = run_epoch(model, test_loader, loss_fn) # run one evaluation pass on the test set
+    auroc = roc_auc_score(l.cpu(), pr.cpu()) # measures how well the model ranks AD images above NC using probabilities
+    vram = torch.cuda.max_memory_allocated() / 1e9 # peak memory converted to GB
+
+    print("\n===== FINAL RESULTS =====")
+    print(f"best val acc {best:.4f}")
+    print(f"test loss {test_loss:.4f}  test acc {test_acc:.4f}  test AUROC {auroc:.4f}")
+    print(classification_report(l.cpu(), p.cpu(), target_names=["NC", "AD"], digits=4))
+    print(confusion_matrix(l.cpu(), p.cpu()))
+    print(f"params {n_params:.2f}M  peak VRAM {vram:.2f} GB")
+
+    res = {"run": CKPT, "best_val_acc": round(best, 4), "test_acc": round(test_acc, 4),
+           "test_auroc": round(auroc, 4),
+           "ad_recall": round(recall_score(l.cpu(), p.cpu()), 4),
+           "macro_f1": round(f1_score(l.cpu(), p.cpu(), average="macro"), 4),
+           "params_M": round(n_params, 2), "peak_vram_gb": round(vram, 2)}
+    json.dump(res, open(CKPT.replace(".pth", "_results.json"), "w"), indent=1) # save headline metrics to JSON for comparing runs
