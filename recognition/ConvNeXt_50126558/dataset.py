@@ -1,10 +1,16 @@
 import os
 import random
+from collections import Counter
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms as T
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torchvision import transforms
 
 ROOT = r"C:\Soong Earn (everything)\Australia\Y2S3\COMP 3710 Pattern Recognition and Analysis\Final Report\ADNI\AD_NC"
+USE_CROP = True
+
+
+def crop(im):
+    return im.crop((32, 8, 232, 210))
 
 
 class ADNIDataset(Dataset):
@@ -28,6 +34,8 @@ def get_dataloaders(batch_size=32):
     def pid(path):
         return os.path.basename(path).rsplit("_", 1)[0]
 
+    idx = lambda p: int(p.rsplit("_", 1)[1].split(".")[0])
+
     train_all, test = load("train"), load("test")
     patients = sorted({pid(p) for p, _ in train_all})
     random.Random(42).shuffle(patients)
@@ -35,16 +43,23 @@ def get_dataloaders(batch_size=32):
     train = [s for s in train_all if pid(s[0]) not in val_ids]
     val = [s for s in train_all if pid(s[0]) in val_ids]
 
-    norm = T.Normalize((0.5,), (0.5,))
-    plain = T.Compose([T.Resize((224, 224)), T.ToTensor(), norm])
-    aug = T.Compose([T.Resize((224, 224)), T.RandomAffine(10, (0.05, 0.05), (0.95, 1.05)),
-                     T.ColorJitter(0.2, 0.2), T.ToTensor(), norm])
+    cnt = Counter((idx(p), y) for p, y in train)
+    keep = {i for i, _ in cnt if cnt[(i, 0)] >= 50 and cnt[(i, 1)] >= 50}
+    train = [s for s in train if idx(s[0]) in keep]
+    val = [s for s in val if idx(s[0]) in keep]
+    weights = [1 / cnt[(idx(p), y)] for p, y in train]
+    print("kept slice indices:", min(keep), "to", max(keep))
 
-    def loader(samples, tf, shuffle):
-        return DataLoader(ADNIDataset(samples, tf), batch_size, shuffle=shuffle,
+    pre = [transforms.Lambda(crop)] if USE_CROP else []
+    plain = transforms.Compose([*pre, transforms.Resize((224, 224)), transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+    aug = transforms.Compose([*pre, transforms.Resize((224, 224)), transforms.RandomAffine(10, (0.05, 0.05), (0.95, 1.05)),
+                              transforms.ColorJitter(0.2, 0.2), transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+
+    def loader(samples, tf, shuffle, sampler=None):
+        return DataLoader(ADNIDataset(samples, tf), batch_size, shuffle=shuffle and sampler is None, sampler=sampler,
                           num_workers=4, pin_memory=True, persistent_workers=True)
 
-    return loader(train, aug, True), loader(val, plain, False), loader(test, plain, False)
+    return loader(train, aug, True, WeightedRandomSampler(weights, len(train))), loader(val, plain, False), loader(test, plain, False)
 
 
 if __name__ == "__main__":

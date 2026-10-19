@@ -1,22 +1,37 @@
 import os
-import time
+import sys
+import json
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 from modules import convnext
 from dataset import get_dataloaders
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, recall_score, f1_score
 
-EPOCHS = 30
-LR = 1e-4
-SEED = 0
-CKPT = "convnext_run3.pth"
+EPOCHS = 50
+LR = 0.0005
+SEED = 1
+CKPT = "convnext_run18.pth"
 scaler = torch.amp.GradScaler("cuda")
+
+
+class Tee:
+    def __init__(self, path):
+        self.terminal, self.file = sys.stdout, open(path, "w", encoding="utf-8")
+
+    def write(self, msg):
+        self.terminal.write(msg)
+        self.file.write(msg)
+        self.file.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.file.flush()
 
 
 def run_epoch(model, loader, loss_fn, opt=None):
     model.train(opt is not None)
-    total, preds, labels = 0, [], []
+    total, preds, labels, probs = 0, [], [], []
     with torch.set_grad_enabled(opt is not None):
         for x, y in loader:
             x, y = x.cuda(non_blocking=True), y.cuda(non_blocking=True)
@@ -26,49 +41,47 @@ def run_epoch(model, loader, loss_fn, opt=None):
             if opt:
                 opt.zero_grad()
                 scaler.scale(loss).backward()
+                scaler.unscale_(opt)
+                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 scaler.step(opt)
                 scaler.update()
+                sched.step()
             total += loss.item() * len(y)
             preds.append(out.argmax(1))
             labels.append(y)
-    preds, labels = torch.cat(preds), torch.cat(labels)
-    return total / len(labels), (preds == labels).float().mean().item(), preds, labels
+            probs.append(out.float().softmax(1)[:, 1])
+    preds, labels, probs = torch.cat(preds), torch.cat(labels), torch.cat(probs)
+    return total / len(labels), (preds == labels).float().mean().item(), preds, labels, probs
 
 
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    sys.stdout = Tee(CKPT.replace(".pth", ".log"))
+    sys.stderr = sys.stdout
     torch.manual_seed(SEED)
-    torch.cuda.manual_seed_all(SEED)
     torch.backends.cudnn.benchmark = True
 
     train_loader, val_loader, test_loader = get_dataloaders()
-    model = convnext().cuda()
-    print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | lr {LR} | seed {SEED}")
+    model = convnext(drop_path_rate=0.1).cuda()
+    n_params = sum(p.numel() for p in model.parameters()) / 1e6
+    print(f"{n_params:.2f}M params | train/val/test: {len(train_loader.dataset)} {len(val_loader.dataset)} {len(test_loader.dataset)} | lr {LR} | seed {SEED}")
     torch.cuda.reset_peak_memory_stats()
 
     loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
-    decay = [p for p in model.parameters() if p.ndim > 1]
-    no_decay = [p for p in model.parameters() if p.ndim <= 1]
-    opt = torch.optim.AdamW([{"params": decay, "weight_decay": 0.05},
-                             {"params": no_decay, "weight_decay": 0.0}], lr=LR)
-    warm = torch.optim.lr_scheduler.LinearLR(opt, 0.1, 1.0, total_iters=3)
-    cos = torch.optim.lr_scheduler.CosineAnnealingLR(opt, EPOCHS - 3)
-    sched = torch.optim.lr_scheduler.SequentialLR(opt, [warm, cos], [3])
+    opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.05)
+    sched = torch.optim.lr_scheduler.OneCycleLR(opt, LR, total_steps=EPOCHS * len(train_loader), pct_start=0.1)
 
     hist = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": []}
     best = 0
     for e in range(EPOCHS):
-        t = time.time()
-        tl, ta, _, _ = run_epoch(model, train_loader, loss_fn, opt)
-        vl, va, _, _ = run_epoch(model, val_loader, loss_fn)
-        sched.step()
+        tl, ta, _, _, _ = run_epoch(model, train_loader, loss_fn, opt)
+        vl, va, _, _, _ = run_epoch(model, val_loader, loss_fn)
         for k, v in zip(hist, (tl, vl, ta, va)):
             hist[k].append(v)
         if va > best:
             best = va
-            torch.save(model.state_dict(), "convnext_run3.pth")
-        print(f"epoch {e + 1}/{EPOCHS}  train loss {tl:.4f} acc {ta:.4f}  "
-              f"val loss {vl:.4f} acc {va:.4f}  time {time.time() - t:.1f}s")
+            torch.save(model.state_dict(), CKPT)
+        print(f"epoch {e + 1}/{EPOCHS}  train loss {tl:.4f} acc {ta:.4f}  val loss {vl:.4f} acc {va:.4f}")
 
     fig, ax = plt.subplots(1, 2, figsize=(10, 4))
     for a, name in zip(ax, ("loss", "acc")):
@@ -78,12 +91,24 @@ if __name__ == "__main__":
         a.set_title(name)
         a.legend()
     plt.tight_layout()
-    plt.savefig("convnext_run3_curves.png")
+    plt.savefig(CKPT.replace(".pth", "_curves.png"))
 
+    print(f"\nsaved best checkpoint: {CKPT}, exists: {os.path.exists(CKPT)}")
     model.load_state_dict(torch.load(CKPT))
-    test_loss, test_acc, p, l = run_epoch(model, test_loader, loss_fn)
+    test_loss, test_acc, p, l, pr = run_epoch(model, test_loader, loss_fn)
+    auroc = roc_auc_score(l.cpu(), pr.cpu())
+    vram = torch.cuda.max_memory_allocated() / 1e9
+
+    print("\n===== FINAL RESULTS =====")
     print(f"best val acc {best:.4f}")
-    print(f"test loss {test_loss:.4f}  test acc {test_acc:.4f}")
+    print(f"test loss {test_loss:.4f}  test acc {test_acc:.4f}  test AUROC {auroc:.4f}")
     print(classification_report(l.cpu(), p.cpu(), target_names=["NC", "AD"], digits=4))
     print(confusion_matrix(l.cpu(), p.cpu()))
-    print(f"peak VRAM {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
+    print(f"params {n_params:.2f}M  peak VRAM {vram:.2f} GB")
+
+    res = {"run": CKPT, "best_val_acc": round(best, 4), "test_acc": round(test_acc, 4),
+           "test_auroc": round(auroc, 4),
+           "ad_recall": round(recall_score(l.cpu(), p.cpu()), 4),
+           "macro_f1": round(f1_score(l.cpu(), p.cpu(), average="macro"), 4),
+           "params_M": round(n_params, 2), "peak_vRAM_gb": round(vram, 2)}
+    json.dump(res, open(CKPT.replace(".pth", "_results.json"), "w"), indent=1)

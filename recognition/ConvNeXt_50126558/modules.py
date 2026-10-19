@@ -3,19 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class DropPath(nn.Module):
-    def __init__(self, p=0.0):
-        super().__init__()
-        self.p = p
-
-    def forward(self, x):
-        if self.p == 0.0 or not self.training:
-            return x
-        keep = 1 - self.p
-        mask = x.new_empty(x.shape[0], 1, 1, 1).bernoulli_(keep)
-        return x * mask / keep
-
-
 class LayerNorm(nn.Module):
     def __init__(self, normalized_shape, eps=1e-6, data_format="channels_last"):
         super().__init__()
@@ -35,17 +22,21 @@ class LayerNorm(nn.Module):
         x = (x - u) / torch.sqrt(s + self.eps)
         return self.weight[:, None, None] * x + self.bias[:, None, None]
 
+def drop_path(x, p, training):
+    if p == 0. or not training:
+        return x
+    return x * x.new_empty(x.shape[0], 1, 1, 1).bernoulli_(1 - p) / (1 - p)
 
-class Block(nn.Module):
-    def __init__(self, dim, layer_scale_init_value=1e-6, drop_path=0.0):
+class Block(nn.Module): # ConvNeXt block: 7x7 depthwise conv, then a 2-layer MLP, plus a residual connection
+    def __init__(self, dim, dp=0.):
         super().__init__()
+        self.dp = dp
         self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim)
         self.norm = LayerNorm(dim, eps=1e-6)
         self.pwconv1 = nn.Linear(dim, 4 * dim)
         self.act = nn.GELU()
         self.pwconv2 = nn.Linear(4 * dim, dim)
-        self.gamma = nn.Parameter(layer_scale_init_value * torch.ones(dim)) if layer_scale_init_value > 0 else None
-        self.drop_path = DropPath(drop_path)
+        self.gamma = nn.Parameter(1e-6 * torch.ones(dim))
 
     def forward(self, x):
         input = x
@@ -55,16 +46,14 @@ class Block(nn.Module):
         x = self.pwconv1(x)
         x = self.act(x)
         x = self.pwconv2(x)
-        if self.gamma is not None:
-            x = self.gamma * x
+        x = self.gamma * x
         x = x.permute(0, 3, 1, 2)
-        return input + self.drop_path(x)
+        return input + drop_path(x, self.dp, self.training)
 
 
 class ConvNeXt(nn.Module):
     def __init__(self, in_chans=1, num_classes=2,
-                 depths=[3, 3, 9, 3], dims=[96, 192, 384, 768],
-                 layer_scale_init_value=1e-6, drop_path_rate=0.1):
+                 depths=[3, 3, 9, 3], dims=[96, 192, 384, 768], drop_path_rate=0):
         super().__init__()
 
         self.downsample_layers = nn.ModuleList()
@@ -77,12 +66,11 @@ class ConvNeXt(nn.Module):
                 LayerNorm(dims[i], eps=1e-6, data_format="channels_first"),
                 nn.Conv2d(dims[i], dims[i + 1], kernel_size=2, stride=2)))
 
+        self.stages = nn.ModuleList() # 4 stages of stacked blocks (3, 3, 9, 3)
         dp = torch.linspace(0, drop_path_rate, sum(depths)).tolist()
         cur = 0
-        self.stages = nn.ModuleList()
         for i in range(4):
-            self.stages.append(nn.Sequential(
-                *[Block(dims[i], layer_scale_init_value, dp[cur + j]) for j in range(depths[i])]))
+            self.stages.append(nn.Sequential(*[Block(dims[i], dp[cur + j]) for j in range(depths[i])]))
             cur += depths[i]
 
         self.norm = nn.LayerNorm(dims[-1], eps=1e-6)
