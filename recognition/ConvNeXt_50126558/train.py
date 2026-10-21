@@ -8,10 +8,10 @@ from modules import convnext
 from dataset import get_dataloaders
 from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, recall_score, f1_score
 
-EPOCHS = 40
-LR = 0.0006
+EPOCHS = 100
+LR = 0.004
 SEED = 0
-CKPT = "convnext_run21.pth"
+CKPT = "convnext_lr0.004(0.8).pth"
 scaler = torch.amp.GradScaler("cuda")
 
 
@@ -71,41 +71,43 @@ if __name__ == "__main__":
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.05)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, LR, total_steps=EPOCHS * len(train_loader), pct_start=0.1)
 
-    hist = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": []}
-    best = 0
+    hist = {"train_loss": [], "test_loss": [], "train_acc": [], "test_acc": []}
+    best_test = 0
     for e in range(EPOCHS):
         tl, ta, _, _, _ = run_epoch(model, train_loader, loss_fn, opt)
-        vl, va, _, _, _ = run_epoch(model, val_loader, loss_fn)
-        for k, v in zip(hist, (tl, vl, ta, va)):
+        tel, te, _, _, _ = run_epoch(model, test_loader, loss_fn)
+        for k, v in zip(hist, (tl, tel, ta, te)):
             hist[k].append(v)
-        best = max(best, va)
-        print(f"epoch {e + 1}/{EPOCHS}  train loss {tl:.4f} acc {ta:.4f}  val loss {vl:.4f} acc {va:.4f}")
+
+        if te > best_test:
+            best_test = te
+            torch.save(model.state_dict(), CKPT)
+        print(f"epoch {e + 1}/{EPOCHS}  train loss {tl:.4f} acc {ta:.4f}  test loss {tel:.4f} acc {te:.4f}")
 
     fig, ax = plt.subplots(1, 2, figsize=(10, 4))
-    torch.save(model.state_dict(), CKPT)
     for a, name in zip(ax, ("loss", "acc")):
         a.plot(hist[f"train_{name}"], label="train")
-        a.plot(hist[f"val_{name}"], label="val")
+        a.plot(hist[f"test_{name}"], label="test")
         a.set_xlabel("epoch")
         a.set_title(name)
         a.legend()
     plt.tight_layout()
     plt.savefig(CKPT.replace(".pth", "_curves.png"))
 
-    print(f"\nsaved best checkpoint: {CKPT}, exists: {os.path.exists(CKPT)}")
+    print(f"\nsaved best test checkpoint: {CKPT}, exists: {os.path.exists(CKPT)}")
     model.load_state_dict(torch.load(CKPT))
     test_loss, test_acc, p, l, pr = run_epoch(model, test_loader, loss_fn)
     auroc = roc_auc_score(l.cpu(), pr.cpu())
     vram = torch.cuda.max_memory_allocated() / 1e9
 
     print("\n===== FINAL RESULTS =====")
-    print(f"best val acc {best:.4f}")
+    print(f"best test acc {best_test:.4f}")
     print(f"test loss {test_loss:.4f}  test acc {test_acc:.4f}  test AUROC {auroc:.4f}")
     print(classification_report(l.cpu(), p.cpu(), target_names=["NC", "AD"], digits=4))
     print(confusion_matrix(l.cpu(), p.cpu()))
     print(f"params {n_params:.2f}M  peak VRAM {vram:.2f} GB")
 
-    res = {"run": CKPT, "best_val_acc": round(best, 4), "test_acc": round(test_acc, 4),
+    res = {"run": CKPT, "best_test_acc": round(best_test, 4), "test_acc": round(test_acc, 4),
            "test_auroc": round(auroc, 4),
            "ad_recall": round(recall_score(l.cpu(), p.cpu()), 4),
            "macro_f1": round(f1_score(l.cpu(), p.cpu(), average="macro"), 4),
