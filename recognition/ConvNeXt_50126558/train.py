@@ -8,10 +8,10 @@ from modules import convnext
 from dataset import get_dataloaders
 from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, recall_score, f1_score
 
-EPOCHS = 50
-LR = 0.0005
-SEED = 1
-CKPT = "convnext_run18.pth"
+EPOCHS = 40
+LR = 0.0006
+SEED = 0
+CKPT = "convnext_run21.pth"
 scaler = torch.amp.GradScaler("cuda")
 
 
@@ -78,12 +78,11 @@ if __name__ == "__main__":
         vl, va, _, _, _ = run_epoch(model, val_loader, loss_fn)
         for k, v in zip(hist, (tl, vl, ta, va)):
             hist[k].append(v)
-        if va > best:
-            best = va
-            torch.save(model.state_dict(), CKPT)
+        best = max(best, va)
         print(f"epoch {e + 1}/{EPOCHS}  train loss {tl:.4f} acc {ta:.4f}  val loss {vl:.4f} acc {va:.4f}")
 
     fig, ax = plt.subplots(1, 2, figsize=(10, 4))
+    torch.save(model.state_dict(), CKPT)
     for a, name in zip(ax, ("loss", "acc")):
         a.plot(hist[f"train_{name}"], label="train")
         a.plot(hist[f"val_{name}"], label="val")

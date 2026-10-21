@@ -7,7 +7,7 @@ from torchvision import transforms
 
 ROOT = r"C:\Soong Earn (everything)\Australia\Y2S3\COMP 3710 Pattern Recognition and Analysis\Final Report\ADNI\AD_NC"
 USE_CROP = True
-
+FILTER = False
 
 def crop(im):
     return im.crop((32, 8, 232, 210))
@@ -36,19 +36,21 @@ def get_dataloaders(batch_size=32):
 
     idx = lambda p: int(p.rsplit("_", 1)[1].split(".")[0])
 
-    train_all, test = load("train"), load("test")
-    patients = sorted({pid(p) for p, _ in train_all})
-    random.Random(42).shuffle(patients)
-    val_ids = set(patients[:int(len(patients) * 0.2)])
-    train = [s for s in train_all if pid(s[0]) not in val_ids]
-    val = [s for s in train_all if pid(s[0]) in val_ids]
+    train, test_all = load("train"), load("test")
+    test_patients = sorted({pid(p) for p, _ in test_all})
+    random.Random(42).shuffle(test_patients)
+    val_ids = set(test_patients[:int(len(test_patients) * 0.1)])
+    val = [s for s in test_all if pid(s[0]) in val_ids]
+    test = [s for s in test_all if pid(s[0]) not in val_ids]
 
-    cnt = Counter((idx(p), y) for p, y in train)
-    keep = {i for i, _ in cnt if cnt[(i, 0)] >= 50 and cnt[(i, 1)] >= 50}
-    train = [s for s in train if idx(s[0]) in keep]
-    val = [s for s in val if idx(s[0]) in keep]
-    weights = [1 / cnt[(idx(p), y)] for p, y in train]
-    print("kept slice indices:", min(keep), "to", max(keep))
+    sampler = None
+    if FILTER:
+        cnt = Counter((idx(p), y) for p, y in train)
+        keep = {i for i, _ in cnt if cnt[(i, 0)] >= 50 and cnt[(i, 1)] >= 50}
+        train = [s for s in train if idx(s[0]) in keep]
+        val = [s for s in val if idx(s[0]) in keep]
+        sampler = WeightedRandomSampler([1 / cnt[(idx(p), y)] for p, y in train], len(train))
+        print("kept slice indices:", min(keep), "to", max(keep))
 
     pre = [transforms.Lambda(crop)] if USE_CROP else []
     plain = transforms.Compose([*pre, transforms.Resize((224, 224)), transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
@@ -59,7 +61,7 @@ def get_dataloaders(batch_size=32):
         return DataLoader(ADNIDataset(samples, tf), batch_size, shuffle=shuffle and sampler is None, sampler=sampler,
                           num_workers=4, pin_memory=True, persistent_workers=True)
 
-    return loader(train, aug, True, WeightedRandomSampler(weights, len(train))), loader(val, plain, False), loader(test, plain, False)
+    return loader(train, aug, True, sampler), loader(val, plain, False), loader(test, plain, False)
 
 
 if __name__ == "__main__":
