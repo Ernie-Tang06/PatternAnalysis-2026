@@ -1,9 +1,10 @@
+# constructs the structure of the model
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-class LayerNorm(nn.Module):
+class LayerNorm(nn.Module): # defines layer normalization
     def __init__(self, normalized_shape, eps=1e-6, data_format="channels_last"):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(normalized_shape))
@@ -22,6 +23,7 @@ class LayerNorm(nn.Module):
         x = (x - u) / torch.sqrt(s + self.eps)
         return self.weight[:, None, None] * x + self.bias[:, None, None]
 
+# stochastic depth: randomly drops the residual branch per sample during training
 def drop_path(x, p, training):
     if p == 0. or not training:
         return x
@@ -33,9 +35,11 @@ class Block(nn.Module): # ConvNeXt block: 7x7 depthwise conv, then a 2-layer MLP
         self.dp = dp
         self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim)
         self.norm = LayerNorm(dim, eps=1e-6)
+        # 1x1 convs implemented as linear layers (inverted bottleneck, 4x expansion)
         self.pwconv1 = nn.Linear(dim, 4 * dim)
         self.act = nn.GELU()
         self.pwconv2 = nn.Linear(4 * dim, dim)
+        # learnable layer scale, starts near zero so each block begins close to identity
         self.gamma = nn.Parameter(1e-6 * torch.ones(dim))
 
     def forward(self, x):
@@ -51,7 +55,7 @@ class Block(nn.Module): # ConvNeXt block: 7x7 depthwise conv, then a 2-layer MLP
         return input + drop_path(x, self.dp, self.training)
 
 
-class ConvNeXt(nn.Module):
+class ConvNeXt(nn.Module): # stem, 4 stages of stacked blocks, then pooling and a linear head
     def __init__(self, in_chans=1, num_classes=2,
                  depths=[3, 3, 9, 3], dims=[96, 192, 384, 768], drop_path_rate=0):
         super().__init__()
@@ -95,9 +99,3 @@ class ConvNeXt(nn.Module):
 
 def convnext(**kwargs):
     return ConvNeXt(depths=[3, 3, 9, 3], dims=[96, 192, 384, 768], **kwargs)
-
-
-if __name__ == "__main__":
-    model = convnext()
-    x = torch.randn(4, 1, 224, 224)
-    print(model(x).shape)
