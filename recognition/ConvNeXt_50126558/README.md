@@ -39,13 +39,14 @@ ConvNeXt modernizes convolutional neural networks using larger kernels, Layer No
    - [train.py](#trainpy)
    - [predict.py](#predictpy)
    - [utils.py](#utilspy)
-3. [Comparison between 2 models](#3-comparison-between-2-models-convnext-and-basic-mlp)
+3. [Comparison between 2 models](#3-comparison-between-2-models-convnext-vs-mlp-mixer)
 4. [Tuning model to reach 0.8 test accuracy](#4-tuning-model-to-reach-08-test-accuracy)
 5. [Final Setup](#5-final-setup)
 6. [Results](#6-results-best-run)
 7. [Fault Analysis](#7-fault-analysis)
-8. [Replication of Project](#8-replication-of-project)
-9. [Artificial Intelligence Usage Disclosure](#9-artificial-intelligence-usage-disclosure)
+8. [Conclusion](#8-conclusion)
+9. [Replication of Project](#9-replication-of-project)
+10. [Artificial Intelligence Usage Disclosure](#10-artificial-intelligence-usage-disclosure)
 
 <br>
 
@@ -288,6 +289,12 @@ ConvNeXt is a pure convolutional neural network (ConvNet) that modernizes the tr
 
 </div>
 
+<p align="center">
+  <img src="images/architecture.png" alt="Architecture">
+  <br>
+  <em>Architecture</em>
+</p>
+
 <br>
 
 ### train.py
@@ -342,31 +349,13 @@ Checks for overlapping: whether there is leakage of patients between train, vali
 
 <br>
 
-## 3. Comparison between 2 models (ConvNeXt and Basic MLP)
+## 3. Comparison between 2 models (ConvNeXt vs MLP-Mixer)
 
-**Chosen baseline model: Basic MLP**
-
-<div align="justify">
-
-All other variables are kept constant to ensure a fair comparison, with model architecture being the only variable that changes.
-
-</div>
-
-**Controlled variables**
+**Chosen baseline model: MLP-Mixer**
 
 <div align="justify">
 
-1. Seed = 0
-2. Epoch = 30
-3. Batch size = 32
-4. Optimizer = Adam
-5. Parameters = 27.82M
-6. Learning rate = 1e-4
-7. Loss function = Cross Entropy Loss
-8. Train/val/test split (20% of train patients for validation)
-9. Preprocessing and augmentations (imported from `dataset.py` to ensure that it is the same)
-10. Evaluation metrics (loss, accuracy, AUROC, classification report, confusion matrix, peak VRAM)
-11. Model selection = the checkpoint with the highest validation accuracy was selected, and that checkpoint was evaluated on the test set.
+ConvNeXt (modern CNN) and MLP-Mixer (modern pure MLP), both ~27.82M parameters, trained from scratch on identical data splits.
 
 </div>
 
@@ -375,52 +364,80 @@ All other variables are kept constant to ensure a fair comparison, with model ar
 <div align="justify">
 
 1. Chose ResNet-50 as baseline as it can be modified from demo 2 ResNet-18 because it has the same structure.
-2. Result: ResNet has a higher test accuracy compared to ConvNeXt.
-3. Confusion: Unclear if all parameters need to be the same including normalization technique, activation function and others.
-4. Realization: ResNet-50 shouldn't be used as a baseline comparison as the question only asks for a standard convolutional network, MLP, or basic linear classifier.
-5. A basic MLP is then chosen as the comparison.
-6. The parameters are set to be the same for comparison as shown above.
+2. Confusion: Unclear if all parameters need to be the same including normalization technique, activation function and others.
+3. Realization: ResNet-50 shouldn't be used as a baseline comparison as the question only asks for a standard convolutional network, MLP, or basic linear classifier.
+4. A basic MLP is then chosen as the comparison.
+5. The parameters are set to be the same for comparison as shown above.
+6. The comparison is only fair when both models are at their best performance.
 
 </div>
 
-**ConvNeXt training curves**
+<div align="justify">
+
+Replaced the basic MLP with MLP-Mixer (parameter-matched to 27.82M, trained with its own recipe) so the comparison is MLP-Mixer vs ConvNeXt, with both models at their best performance.
+
+</div>
+
+**ConvNeXt final result**
 
 <p align="center">
-  <img src="images/baseline-convnext.png" alt="Baseline ConvNeXt training curves">
+  <img src="images/final%20results.png" alt="ConvNeXt final result">
   <br>
-  <em>Baseline ConvNeXt</em>
+  <em>Final results</em>
 </p>
 
 <br>
 
-**MLP training curves**
+**ConvNeXt training curves**
 
 <p align="center">
-  <img src="images/baseline-mlp.png" alt="Baseline MLP training curves">
+  <img src="images/final%20curves.png" alt="ConvNeXt training curves">
   <br>
-  <em>Baseline MLP</em>
+  <em>Final curves</em>
+</p>
+
+<br>
+
+**MLP-Mixer final result**
+
+<p align="center">
+  <img src="images/MLP-mixer%20final%20result.png" alt="MLP-Mixer final result">
+  <br>
+  <em>MLP-Mixer final result</em>
+</p>
+
+<br>
+
+**MLP-Mixer training curves**
+
+<p align="center">
+  <img src="images/MLP-mixer%20curves.png" alt="MLP-Mixer training curves">
+  <br>
+  <em>MLP-Mixer curves</em>
 </p>
 
 <br>
 
 **Results**
 
-| | ConvNeXt | Basic MLP |
+| | ConvNeXt | MLP Mixer |
 |---|---|---|
-| Best validation accuracy | 0.8609 | 0.6898 |
-| Test accuracy | 0.7366 | 0.6207 |
-| Test AUROC | 0.8176 | 0.6384 |
-| Peak VRAM | 2.68 GB | 0.58 GB |
+| Test loss | 0.6416 | 0.7600 |
+| Test accuracy | 0.8122 | 0.7521 |
+| AUROC | 0.8766 | 0.8229 |
+| NC recall | 92.7% | 89.7% |
+| AD recall | 70.5% | 61.7% |
+| Peak VRAM | 2.68 GB | 2.21 GB |
 
 <div align="justify">
 
-The results show that ConvNeXt outperformed the Basic MLP in validation accuracy, test accuracy, and test AUROC. Test accuracy is respectively 62.07% and 73.66%, representing a difference of 11.59 percentage points. Test AUROC increased from 0.6384 to 0.8176, indicating that ConvNeXt had a stronger ability to distinguish between the NC and AD classes across different classification thresholds. Besides, from the training curves, we can observe that the loss and accuracy of ConvNeXt perform much better compared to MLP. It has lower losses and higher accuracies.
+The results show that ConvNeXt outperformed the MLP-Mixer in test loss (the lower the better), test accuracy, test AUROC, NC recall and AD recall. Test accuracy is respectively 81.22% and 75.21%, representing a difference of 6.01%. AUROC increased from 0.8229 to 0.8766, indicating that ConvNeXt had a stronger ability to distinguish between the NC and AD classes across different classification thresholds. ConvNeXt have lower losses and higher accuracies compared to MLP-Mixer.
 
 </div>
 
 <div align="justify">
 
-ConvNeXt also required more peak GPU memory, using 2.68 GB compared with 0.58 GB for the Basic MLP. This indicates a higher memory requirement under the tested configurations, despite both models having approximately the same number of parameters.
+ConvNeXt required more peak GPU memory, using 2.68 GB compared with 2.21 GB for the MLP-Mixer. This indicates a higher memory requirement under the tested configurations, despite both models having approximately the same number of parameters.
 
 </div>
 
@@ -441,11 +458,6 @@ Overall, ConvNeXt achieved stronger classification performance than the Basic ML
 ### Initial setup
 
 20% from train used as validation
-
-```text
-Train      : 17216 (56.41%)
-Validation :  4304 (14.1%)
-```
 
 | Changes | Test Accuracy |
 |---|---|
@@ -662,7 +674,7 @@ I tried hyperparameter changes intended to reduce this overfitting, such as a lo
 
 | Metric | Value | Meaning |
 |---|---|---|
-| Best test accuracy = test accuracy | 0.8122 | About 81.2% of the 6,300 test samples were classified correctly. |
+| Best test accuracy (= test accuracy) | 0.8122 | About 81.2% of the 6,300 test samples were classified correctly. |
 | Test loss | 0.6416 | Average cross-entropy loss on the test set (lower is better). |
 | Test AUROC | 0.8766 | The probability that the model scores a random AD sample higher than a random NC sample. 0.5 is chance and 1.0 is perfect. |
 
@@ -857,7 +869,27 @@ The heatmap purely indicates where the model is looking when making predictions,
 
 <br>
 
-## 8. Replication of Project
+## 8. Conclusion
+
+<div align="justify">
+
+This project applied ConvNeXt to the ADNI dataset to classify Alzheimer's Disease (AD) versus Normal Control (NC). The model reached a test accuracy of approximately 0.81, meaning it classified about 81% of test images correctly.
+
+</div>
+
+<div align="justify">
+
+However, the model produced more false negatives than false positives, so some AD cases were missed. Missed cases are the more costly error in a screening setting. This can be mitigated by adjusting the decision threshold to favour AD recall, and by referring low-confidence predictions to a clinical expert. Grad-CAM can also serve as a safeguard. If the highlighted region does not correspond to clinically relevant brain areas, the case should be referred to an expert regardless of confidence.
+
+</div>
+
+<br>
+
+---
+
+<br>
+
+## 9. Replication of Project
 
 **Dataset:** ADNI
 
@@ -909,7 +941,7 @@ The heatmap purely indicates where the model is looking when making predictions,
 
 <br>
 
-## 9. Artificial Intelligence Usage Disclosure
+## 10. Artificial Intelligence Usage Disclosure
 
 **AI tool used:** Claude (Anthropic)
 
@@ -921,6 +953,14 @@ The heatmap purely indicates where the model is looking when making predictions,
 - Claude also assisted in writing all the other code.
 - Claude helped with errors and suggested changes to attempt.
 - Claude converted the README file from Word to `.md` file format.
+
+</div>
+
+**2) Image generation**
+
+<div align="justify">
+
+- Claude is used to generate a new structure which exactly fits my model.
 
 </div>
 
